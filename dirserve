@@ -4,6 +4,8 @@ use strict;
 use warnings;
 use Cwd 'cwd';
 use Getopt::Long;
+use File::HomeDir;
+use POSIX 'setsid';
 
 
 # Configure
@@ -13,27 +15,31 @@ usage: dirserve [OPTIONS]
 
 These options are available:
   --directory    Directory to serve.  Defaults to current directory.
+  --pid_file     File to store pid, defaults to \$HOME/.dirserve.pid.
   --index-page   Page to show by default.  Defaults to directory listing.
   --port         Port to serve on.  Defaults to 3000.
   --no-dots      No navigating to parent directories via '..'.
+  --fork         Fork into the background.
   --help         This message.
 EOF
 
 my @GETOPT_SPEC = qw/
   directory=s
-  index=s
+  pid-file=s
+  index-page=s
   port=s
   no-dots
+  fork
   help
   /;
 
 my %opt = (
-	directory => cwd,
-	port      => 3000
+    directory => cwd,
+    port      => 3000,
+    'pid-file' => File::HomeDir->my_home . "/.dirserve.pid",
 );
 
-my $p = Getopt::Long::Parser->new;
-$p->getoptions( \%opt, @GETOPT_SPEC );
+GetOptions( \%opt, @GETOPT_SPEC );
 
 print $usage and exit if $opt{help};
 
@@ -45,11 +51,12 @@ use Mojo::Server::Daemon;
 
 app->static->root($opt{directory});
 
+
 # Default page
 get '/' => sub {
-	shift->render_static( $opt{index} );
+	shift->render_static( $opt{'index-page'} );
 }
-  if $opt{index};
+  if $opt{'index-page'};
 
 # Dir listing
 get '/(*dir)' => { dir => '' } => sub {
@@ -87,7 +94,24 @@ get '/(*dir)' => { dir => '' } => sub {
 };
 
 app->secret('cookie-phrase');
-Mojo::Server::Daemon->new->silent(1)->listen( ["http://*:$opt{port}"] )->run;
+
+my $kid = 1;
+if ( $opt{fork} ) {
+    defined ($kid = fork) or die "Cannot fork: $!\n";
+    if ($kid) {
+    } else {
+        # Child runs this block
+        my $file = $opt{'pid-file'};
+        # Create PID file
+        my $pid_file = IO::File->new($file, '>', 0644);
+        print $pid_file $$;
+        $pid_file->close;
+        POSIX::setsid or die "Can't start a new session: $!";
+        Mojo::Server::Daemon->new->silent(1)->listen( ["http://*:$opt{port}"] )->run;
+    }
+} else {
+    Mojo::Server::Daemon->new->silent(1)->listen( ["http://*:$opt{port}"] )->run;
+}
 
 1;
 
